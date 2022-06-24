@@ -9,7 +9,7 @@
 
 - For regular http/https request, [network::URLLoader]() is used. Which encapsulates a bunch of things, including the IPC interaction with NetworkService (that tipically lives in a separate process), which ultimately uses a [net::URLRequest](https://source.chromium.org/chromium/chromium/src/+/main:net/url_request/url_request.h;l=85;drc=256182eb99a7e9de19375dc250df8b3d79e0bda8) to drive the connection, as well as SSL auth/certificate handling delegated to browser process (see [network::mojom::URLLoaderNetworkServiceObserver](https://source.chromium.org/chromium/chromium/src/+/main:services/network/public/mojom/url_loader_network_service_observer.mojom;l=83;drc=169c6cc102b39295a5bfe2f2a176b42b1c2fe2c4) in the class diagram) through mojo endpoints, etc. OTOH, [WebSocketStream]() holds a URLRequest instance itself instead, which implies in a significant divergence with the HTTP path.
 
-#### Code diving
+### Code diving
 
 - [x] Is [ClientCertStoreNSS](https://source.chromium.org/chromium/chromium/src/+/main:net/ssl/client_cert_store_nss.h;l=23;drc=70b0ee470bd53a63da6c4194579e8c2865db2b79) the [net::ClientCertStore](https://source.chromium.org/chromium/chromium/src/+/main:net/ssl/client_cert_store.h;l=21;drc=70b0ee470bd53a63da6c4194579e8c2865db2b79) used on Linux Desktop?
   - Answer: Yes. In Chrome, created at [ProfileNetworkContextService::CreateClientCertStore](https://source.chromium.org/chromium/chromium/src/+/main:chrome/browser/net/profile_network_context_service.cc;l=622-625;drc=169c6cc102b39295a5bfe2f2a176b42b1c2fe2c4) function.
@@ -115,7 +115,7 @@
   - Potential problem: Even not showing the Certificate Selection popup, it seems another dialog seems to be required in order to let users enter their private key password which, in Chrome, is implemented by [ChromeNSSCryptoModuleDelegate](https://source.chromium.org/chromium/chromium/src/+/main:chrome/browser/ui/crypto_module_delegate_nss.cc;l=73;drc=da2ec58f64a4986e99d1799b711dade577a2a5f0) and set up when [instantiating the net::ClientCertStore](https://source.chromium.org/chromium/chromium/src/+/main:chrome/browser/net/profile_network_context_service.cc;l=622-625;drc=169c6cc102b39295a5bfe2f2a176b42b1c2fe2c4). This must be considered in our solution, it would be a potential blocker for supporting AutoSelectCertificateForUrls + WSS.
   - FTR, there is a [//remoting](https://source.chromium.org/chromium/chromium/src/+/main:remoting/host/token_validator_base.cc;l=205-236;drc=da2ec58f64a4986e99d1799b711dade577a2a5f0) component that does something similar, though it probably runs on its UI process, etc.
 
-#### Solution (WIP)
+### Solution (WIP)
 
 [network::WebSocket](https://source.chromium.org/chromium/chromium/src/+/main:services/network/websocket.h;drc=da2ec58f64a4986e99d1799b711dade577a2a5f0) class already receives (and stores) a [URLLoaderNetworkServiceObserver](), though it is used only to forward [OnSSLCertificateError](https://source.chromium.org/chromium/chromium/src/+/main:services/network/websocket.cc;l=359-378;drc=da2ec58f64a4986e99d1799b711dade577a2a5f0) event as of now. So, the solution would consist of:
 
@@ -131,8 +131,55 @@
 3. [ ] Modify (slightly?) Chrome's impl of [ChromeContentBrowserClient::SelectClientCertificate()](https://source.chromium.org/chromium/chromium/src/+/main:chrome/browser/chrome_content_browser_client.cc;l=3192;drc=da2ec58f64a4986e99d1799b711dade577a2a5f0) such that it avoids the Cert Selection UI popup, when it corresponds to a websocket request (how?). Likely optional for the initial short-term solution, though a hard-requirement for the final upstreamable solution.
   - TODO: Investigate further.
 
-#### Some links:
+### Testing
 
+- Follow [these instructions](https://medium.com/geekculture/creating-a-local-websocket-server-with-tls-ssl-is-easy-as-pie-de1a2ef058e0) to get am SSL certificate (from zerossl.com) and set it up on our local development env. Assuming you have a real internet domain, eg: yamane.dev in my case.
+- And download, set up and run [this sample project](), which will serve wss websockets at, for example, wss://yamane.dev:8443, by running:
+```sh=bash
+php cli/wss-server.php
+```
+  - In order to get enable basic "client certificate" auth, apply the follwing oneliner to the server code:
+  ```diff
+  diff --git a/cli/wss-server.php b/cli/wss-server.php
+  index 984430ebb4db..83e6df0bdc2b 100644
+  --- a/cli/wss-server.php
+  +++ b/cli/wss-server.php
+  @@ -20,7 +20,7 @@ $server = new Server('0.0.0.0:8443', $loop);
+   $secureServer = new SecureServer($server, $loop, [
+       'local_cert'  => __DIR__  . '/../ssl/certificate.crt',
+       'local_pk' => __DIR__  . '/../ssl/private.key',
+  -    'verify_peer' => false,
+  +    'verify_peer' => true,
+   ]);
+
+   $limitingServer = new LimitingServer($secureServer, 50);
+  ```
+- Run patched chromium as follows, for example:
+```sh=bash
+out/linux/chrome \
+  --ozone-platform=wayland \
+  --enable-logging=stderr \
+  --no-sandbox \
+  --user-data-dir=/tmp/chr \
+  --vmodule='websocket*=1,wayland*=10' \
+  --auto-open-devtools-for-tabs
+```
+- And run the following code in Chromium's developer console:
+```js
+const ws = new WebSocket('ws://127.0.0.1:8080');
+ws.onmessage = (res) => { console.log(res.data) };
+ws.send('/start analysis');
+```
+- Troubleshooting:
+  - Had to create an empty `data/players.json` (eg: `echo '[]' > data/players.json`) file otherwise the server was failing to start with the following error:
+```
+PHP Warning:  file_get_contents(src/../data/players.json): Failed to open stream: No such file or directory in vendor/chesslablab/php-chess/src/Grandmaster.php on line 13
+PHP Fatal error:  Uncaught TypeError: ArrayIterator::__construct(): Argument #1 ($array) must be of type array, null given in vendor/chesslablab/php-chess/src/Grandmaster.php:16
+```
+  - Ensure Goma service isn't running, because some of its binaries listen to 8443 port
+
+
+### Some links:
 - https://textslashplain.com/2020/05/04/client-certificate-authentication/
 - https://jpassing.com/2021/09/27/do-browsers-use-client-certificates-to-authenticate-the-user-the-device-or-both/
 - http://www.browserauth.net/tls-client-authentication
@@ -145,3 +192,6 @@
 - https://firefox-source-docs.mozilla.org/security/nss/legacy/reference/nss_certificate_functions/index.html#cert_getdefaultcertdb
 - https://man.archlinux.org/man/core/nss/pk12util.1.en
 - https://chromium.googlesource.com/chromium/src/+/refs/heads/master/net/docs/life-of-a-url-request.md
+- https://medium.com/geekculture/creating-a-local-websocket-server-with-tls-ssl-is-easy-as-pie-de1a2ef058e0
+- https://medium.com/geekculture/a-simple-example-of-ssl-tls-websocket-with-reactphp-and-ratchet-e03be973f521
+
