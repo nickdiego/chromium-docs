@@ -1,16 +1,15 @@
 ### The problem:
 
-> - Would it be possible to implement the same logic used for HTTPS when _AutoSelectCertificateForUrls_ policy is enabled? Which wouldn’t result in an UI pop-up. 
+> Would it be possible to implement the same logic used for HTTPS when _AutoSelectCertificateForUrls_ policy is enabled? Which wouldn’t result in an UI pop-up.
 > Context: https://bugs.chromium.org/p/chromium/issues/detail?id=993907#c26
 
 - Main classes involved:
 
-![Class diagram with the main classes involved](chromium-wss-vs-https-client-cert-classes.png)
-
+![Class diagram with the main classes involved](https://github.com/nickdiego/chromium-docs/raw/main/wss-client-certs/chromium-wss-vs-https-client-cert-classes.png)
 
 - For regular http/https request, [network::URLLoader]() is used. Which encapsulates a bunch of things, including the IPC interaction with NetworkService (that tipically lives in a separate process), which ultimately uses a [net::URLRequest](https://source.chromium.org/chromium/chromium/src/+/main:net/url_request/url_request.h;l=85;drc=256182eb99a7e9de19375dc250df8b3d79e0bda8) to drive the connection, as well as SSL auth/certificate handling delegated to browser process (see [network::mojom::URLLoaderNetworkServiceObserver](https://source.chromium.org/chromium/chromium/src/+/main:services/network/public/mojom/url_loader_network_service_observer.mojom;l=83;drc=169c6cc102b39295a5bfe2f2a176b42b1c2fe2c4) in the class diagram) through mojo endpoints, etc. OTOH, [WebSocketStream]() holds a URLRequest instance itself instead, which implies in a significant divergence with the HTTP path.
 
-##### Findings and work items:
+#### Code diving
 
 - [x] Is [ClientCertStoreNSS](https://source.chromium.org/chromium/chromium/src/+/main:net/ssl/client_cert_store_nss.h;l=23;drc=70b0ee470bd53a63da6c4194579e8c2865db2b79) the [net::ClientCertStore](https://source.chromium.org/chromium/chromium/src/+/main:net/ssl/client_cert_store.h;l=21;drc=70b0ee470bd53a63da6c4194579e8c2865db2b79) used on Linux Desktop?
   - Answer: Yes. In Chrome, created at [ProfileNetworkContextService::CreateClientCertStore](https://source.chromium.org/chromium/chromium/src/+/main:chrome/browser/net/profile_network_context_service.cc;l=622-625;drc=169c6cc102b39295a5bfe2f2a176b42b1c2fe2c4) function.
@@ -21,7 +20,7 @@
     ```sh=bash
     # Install it (tested on Arch Linux)
     pk12util -i ~/Downloads/badssl.com-client.p12 -d sql:$HOME/.pki/nssdb
-    
+
     # To list all the certificates installed:
     certutil -d sql:$HOME/.pki/nssdb -L
     ```
@@ -68,10 +67,13 @@
     #35 0x5589691a732a _start
 
     ```
+- [x] Where is the WebSocketStream created at NetworkService process side?
+  - Answer: The entry point is [network::mojom::NetworkContext::CreateWebSocket()](https://source.chromium.org/chromium/chromium/src/+/main:services/network/public/mojom/network_context.mojom;l=1250;drc=da2ec58f64a4986e99d1799b711dade577a2a5f0), the same toplevel component/API used to create, for example, network::URLLoaderFactory instances (used to create URLLoaders all over the code base).
+  - An example of its usage is ...
 - [x] Which process/thread [WebSocketStream::Delegate::OnCertificateRequested()](https://source.chromium.org/chromium/chromium/src/+/main:net/websockets/websocket_stream.cc;l=426;drc=0e45c020c43b1a9f6d2870ff7f92b30a2f03a458) runs in?
   - Answer: It runs in NetworkService process, in the io thread.
   - Here is a sample stack trace of [net::WebSocketStreamRequestImpl::PerformUpgrade()]():
-      ```
+      ```c++
       #2 0x7fe46e6b6194 net::(anonymous namespace)::WebSocketStreamRequestImpl::PerformUpgrade()
       #3 0x7fe46e6b5af7 net::(anonymous namespace)::Delegate::OnResponseStarted()
       #4 0x7fe46e62a691 net::URLRequest::NotifyResponseStarted()
@@ -105,4 +107,41 @@
       #32 0x7fe45d5fa5c2 start_thread
       #33 0x7fe45d67f584 __GI___clone
       ```
-- [ ] Would it be possible manipulate [net::ClientCertStore]() (same used in URLLoader path, though in browser process instead) straight away from [net::WebSocketStream]() code? That would simplify things in case of a more short-term approach(/workaround), eg: No mojo to communicate with browser process, no migration to URLLoader, etc.
+- [x] Where in Chrome code does the certificate selection UI is shown?
+  - At [ChromeContentBrowserClient::SelectClientCertificate()](https://source.chromium.org/chromium/chromium/src/+/main:chrome/browser/chrome_content_browser_client.cc;l=3192;drc=da2ec58f64a4986e99d1799b711dade577a2a5f0) function, one of the toplevel content embedding class in Chrome code.
+- [x] Where in the codebase the 'AutoSelectCertificateForUrls' policy is applied when selection a client certificate?
+  - At [chrome::enterprise_util:: GetCertAutoSelectionFilters()](https://source.chromium.org/chromium/chromium/src/+/main:chrome/browser/enterprise/util/managed_browser_utils.cc;l=63;drc=da2ec58f64a4986e99d1799b711dade577a2a5f0) function, called by the above mentioned [ChromeContentBrowserClient::SelectClientCertificate()](https://source.chromium.org/chromium/chromium/src/+/main:chrome/browser/chrome_content_browser_client.cc;l=3192;drc=da2ec58f64a4986e99d1799b711dade577a2a5f0). Thus in //chrome layer (ie: higher level than //net for example, where core websocket code lives), which would make it difficult to access (ie: hacky, layering violation) in a quick&dirty workaround (as in the bullet below).
+- [ ] ~~Would it be possible manipulate [net::ClientCertStore]() (same used in URLLoader path, though in browser process instead) straight away from [net::WebSocketStream]() code? That would simplify things in case of a more short-term approach(/workaround), eg: No mojo to communicate with browser process, no migration to URLLoader, etc.~~
+  - Potential problem: Even not showing the Certificate Selection popup, it seems another dialog seems to be required in order to let users enter their private key password which, in Chrome, is implemented by [ChromeNSSCryptoModuleDelegate](https://source.chromium.org/chromium/chromium/src/+/main:chrome/browser/ui/crypto_module_delegate_nss.cc;l=73;drc=da2ec58f64a4986e99d1799b711dade577a2a5f0) and set up when [instantiating the net::ClientCertStore](https://source.chromium.org/chromium/chromium/src/+/main:chrome/browser/net/profile_network_context_service.cc;l=622-625;drc=169c6cc102b39295a5bfe2f2a176b42b1c2fe2c4). This must be considered in our solution, it would be a potential blocker for supporting AutoSelectCertificateForUrls + WSS.
+  - FTR, there is a [//remoting](https://source.chromium.org/chromium/chromium/src/+/main:remoting/host/token_validator_base.cc;l=205-236;drc=da2ec58f64a4986e99d1799b711dade577a2a5f0) component that does something similar, though it probably runs on its UI process, etc.
+
+#### Solution (WIP)
+
+[network::WebSocket](https://source.chromium.org/chromium/chromium/src/+/main:services/network/websocket.h;drc=da2ec58f64a4986e99d1799b711dade577a2a5f0) class already receives (and stores) a [URLLoaderNetworkServiceObserver](), though it is used only to forward [OnSSLCertificateError](https://source.chromium.org/chromium/chromium/src/+/main:services/network/websocket.cc;l=359-378;drc=da2ec58f64a4986e99d1799b711dade577a2a5f0) event as of now. So, the solution would consist of:
+
+1. [ ] Plumb WebSocketStream's [Delegate::OnCertificateRequest()](https://source.chromium.org/chromium/chromium/src/+/main:net/websockets/websocket_stream.cc;l=426;drc=da2ec58f64a4986e99d1799b711dade577a2a5f0) all the way up to [network::WebSocket](https://source.chromium.org/chromium/chromium/src/+/main:services/network/websocket.h;l=54;drc=da2ec58f64a4986e99d1799b711dade577a2a5f0) so that it can forward the request to the browser process, through its mojom::URLLoaderNetworkServiceObserver instance. Which requires to:
+  - Add a new method to [net::WebSocketStream::ConnectDelegate](https://source.chromium.org/chromium/chromium/src/+/main:net/websockets/websocket_stream.h;l=91;drc=da2ec58f64a4986e99d1799b711dade577a2a5f0) interface and impl it in [net::WebSocketChannel](https://source.chromium.org/chromium/chromium/src/+/main:net/websockets/websocket_channel.h;l=51;drc=da2ec58f64a4986e99d1799b711dade577a2a5f0)
+  - Add a new method to [net::WebSocketChannel::WebSocketEventInterface](https://source.chromium.org/chromium/chromium/src/+/main:net/websockets/websocket_event_interface.h;l=35;drc=da2ec58f64a4986e99d1799b711dade577a2a5f0) and impl it in [network::WebSocket::WebSocketEventHandler](https://source.chromium.org/chromium/chromium/src/+/main:services/network/websocket.cc;l=132;drc=da2ec58f64a4986e99d1799b711dade577a2a5f0) which builds required data and calls into [URLLoaderNetworkServiceObserver::OnCertificateRequested()](https://source.chromium.org/chromium/chromium/src/+/main:services/network/public/mojom/url_loader_network_service_observer.mojom;l=104-107;drc=da2ec58f64a4986e99d1799b711dade577a2a5f0). [URLLoader's impl](https://source.chromium.org/chromium/chromium/src/+/main:services/network/url_loader.cc;l=1489-1505;drc=da2ec58f64a4986e99d1799b711dade577a2a5f0) should be a good ref.
+
+2. [ ] Patch network::WebSocket to implement [network::mojom::ClientCertificateResponder](https://source.chromium.org/chromium/chromium/src/+/main:services/network/public/mojom/url_loader_network_service_observer.mojom;l=30;drc=da2ec58f64a4986e99d1799b711dade577a2a5f0), just like URLLoader does, thus forwarding the certificate selection result back to the URLRequest, owned by the corresponding net::WebSocketStream. Which could be achieved by:
+  - Add boilerplate code that handles a new mojo::Receiver for mojom::ClientCertificateResponder, etc.
+  - Add an implementation of [net::SSLPrivateKey](https://source.chromium.org/chromium/chromium/src/+/main:net/ssl/ssl_private_key.h;drc=da2ec58f64a4986e99d1799b711dade577a2a5f0;l=29), similar to [URLLoader's one](https://source.chromium.org/chromium/chromium/src/+/main:services/network/url_loader.cc;l=217;drc=da2ec58f64a4986e99d1799b711dade577a2a5f0A). _(TODO: Really needed? learn more about it.)_
+  - Use [URLLoader's impl](https://source.chromium.org/chromium/chromium/src/+/main:services/network/url_loader.cc;l=2036-2046;drc=da2ec58f64a4986e99d1799b711dade577a2a5f0) as reference.
+
+3. [ ] Modify (slightly?) Chrome's impl of [ChromeContentBrowserClient::SelectClientCertificate()](https://source.chromium.org/chromium/chromium/src/+/main:chrome/browser/chrome_content_browser_client.cc;l=3192;drc=da2ec58f64a4986e99d1799b711dade577a2a5f0) such that it avoids the Cert Selection UI popup, when it corresponds to a websocket request (how?). Likely optional for the initial short-term solution, though a hard-requirement for the final upstreamable solution.
+  - TODO: Investigate further.
+
+#### Some links:
+
+- https://textslashplain.com/2020/05/04/client-certificate-authentication/
+- https://jpassing.com/2021/09/27/do-browsers-use-client-certificates-to-authenticate-the-user-the-device-or-both/
+- http://www.browserauth.net/tls-client-authentication
+- About AutoSelectCertificateForUrls policy:
+  - https://groups.google.com/a/chromium.org/g/chromium-discuss/c/oBuvub4m_zs
+  - https://chromeenterprise.google/policies/#AutoSelectCertificateForUrls
+  - https://gist.github.com/IngussNeilands/3bbbb7d78954c85e2e988cf3bfec7caa
+- https://wiki.archlinux.org/title/Network_Security_Services
+- https://firefox-source-docs.mozilla.org/security/nss/legacy/tools/nss_tools_certutil/index.html#Using_the_Certificate_Database_Tool
+- https://firefox-source-docs.mozilla.org/security/nss/legacy/reference/nss_certificate_functions/index.html#cert_getdefaultcertdb
+- https://man.archlinux.org/man/core/nss/pk12util.1.en
+- https://chromium.googlesource.com/chromium/src/+/refs/heads/master/net/docs/life-of-a-url-request.md
