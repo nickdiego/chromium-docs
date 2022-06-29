@@ -119,11 +119,11 @@
 
 [network::WebSocket](https://source.chromium.org/chromium/chromium/src/+/main:services/network/websocket.h;drc=da2ec58f64a4986e99d1799b711dade577a2a5f0) class already receives (and stores) a [URLLoaderNetworkServiceObserver](), though it is used only to forward [OnSSLCertificateError](https://source.chromium.org/chromium/chromium/src/+/main:services/network/websocket.cc;l=359-378;drc=da2ec58f64a4986e99d1799b711dade577a2a5f0) event as of now. So, the solution would consist of:
 
-1. [ ] Plumb WebSocketStream's [Delegate::OnCertificateRequest()](https://source.chromium.org/chromium/chromium/src/+/main:net/websockets/websocket_stream.cc;l=426;drc=da2ec58f64a4986e99d1799b711dade577a2a5f0) all the way up to [network::WebSocket](https://source.chromium.org/chromium/chromium/src/+/main:services/network/websocket.h;l=54;drc=da2ec58f64a4986e99d1799b711dade577a2a5f0) so that it can forward the request to the browser process, through its mojom::URLLoaderNetworkServiceObserver instance. Which requires to:
+1. [x] Plumb WebSocketStream's [Delegate::OnCertificateRequest()](https://source.chromium.org/chromium/chromium/src/+/main:net/websockets/websocket_stream.cc;l=426;drc=da2ec58f64a4986e99d1799b711dade577a2a5f0) all the way up to [network::WebSocket](https://source.chromium.org/chromium/chromium/src/+/main:services/network/websocket.h;l=54;drc=da2ec58f64a4986e99d1799b711dade577a2a5f0) so that it can forward the request to the browser process, through its mojom::URLLoaderNetworkServiceObserver instance. Which requires to:
   - Add a new method to [net::WebSocketStream::ConnectDelegate](https://source.chromium.org/chromium/chromium/src/+/main:net/websockets/websocket_stream.h;l=91;drc=da2ec58f64a4986e99d1799b711dade577a2a5f0) interface and impl it in [net::WebSocketChannel](https://source.chromium.org/chromium/chromium/src/+/main:net/websockets/websocket_channel.h;l=51;drc=da2ec58f64a4986e99d1799b711dade577a2a5f0)
   - Add a new method to [net::WebSocketChannel::WebSocketEventInterface](https://source.chromium.org/chromium/chromium/src/+/main:net/websockets/websocket_event_interface.h;l=35;drc=da2ec58f64a4986e99d1799b711dade577a2a5f0) and impl it in [network::WebSocket::WebSocketEventHandler](https://source.chromium.org/chromium/chromium/src/+/main:services/network/websocket.cc;l=132;drc=da2ec58f64a4986e99d1799b711dade577a2a5f0) which builds required data and calls into [URLLoaderNetworkServiceObserver::OnCertificateRequested()](https://source.chromium.org/chromium/chromium/src/+/main:services/network/public/mojom/url_loader_network_service_observer.mojom;l=104-107;drc=da2ec58f64a4986e99d1799b711dade577a2a5f0). [URLLoader's impl](https://source.chromium.org/chromium/chromium/src/+/main:services/network/url_loader.cc;l=1489-1505;drc=da2ec58f64a4986e99d1799b711dade577a2a5f0) should be a good ref.
 
-2. [ ] Patch network::WebSocket to implement [network::mojom::ClientCertificateResponder](https://source.chromium.org/chromium/chromium/src/+/main:services/network/public/mojom/url_loader_network_service_observer.mojom;l=30;drc=da2ec58f64a4986e99d1799b711dade577a2a5f0), just like URLLoader does, thus forwarding the certificate selection result back to the URLRequest, owned by the corresponding net::WebSocketStream. Which could be achieved by:
+2. [x] Patch network::WebSocket to implement [network::mojom::ClientCertificateResponder](https://source.chromium.org/chromium/chromium/src/+/main:services/network/public/mojom/url_loader_network_service_observer.mojom;l=30;drc=da2ec58f64a4986e99d1799b711dade577a2a5f0), just like URLLoader does, thus forwarding the certificate selection result back to the URLRequest, owned by the corresponding net::WebSocketStream. Which could be achieved by:
   - Add boilerplate code that handles a new mojo::Receiver for mojom::ClientCertificateResponder, etc.
   - Add an implementation of [net::SSLPrivateKey](https://source.chromium.org/chromium/chromium/src/+/main:net/ssl/ssl_private_key.h;drc=da2ec58f64a4986e99d1799b711dade577a2a5f0;l=29), similar to [URLLoader's one](https://source.chromium.org/chromium/chromium/src/+/main:services/network/url_loader.cc;l=217;drc=da2ec58f64a4986e99d1799b711dade577a2a5f0A). _(TODO: Really needed? learn more about it.)_
   - Use [URLLoader's impl](https://source.chromium.org/chromium/chromium/src/+/main:services/network/url_loader.cc;l=2036-2046;drc=da2ec58f64a4986e99d1799b711dade577a2a5f0) as reference.
@@ -131,28 +131,16 @@
 3. [ ] Modify (slightly?) Chrome's impl of [ChromeContentBrowserClient::SelectClientCertificate()](https://source.chromium.org/chromium/chromium/src/+/main:chrome/browser/chrome_content_browser_client.cc;l=3192;drc=da2ec58f64a4986e99d1799b711dade577a2a5f0) such that it avoids the Cert Selection UI popup, when it corresponds to a websocket request (how?). Likely optional for the initial short-term solution, though a hard-requirement for the final upstreamable solution.
   - TODO: Investigate further.
 
+**WIP Patch at:** https://chromium-review.googlesource.com/c/chromium/src/+/3733743
+
 ### Testing
 
-- Follow [these instructions](https://medium.com/geekculture/creating-a-local-websocket-server-with-tls-ssl-is-easy-as-pie-de1a2ef058e0) to get am SSL certificate (from zerossl.com) and set it up on our local development env. Assuming you have a real internet domain, eg: yamane.dev in my case.
-- And download, set up and run [this sample project](), which will serve wss websockets at, for example, wss://yamane.dev:8443, by running:
-```sh=bash
-php cli/wss-server.php
-```
-  - In order to get enable basic "client certificate" auth, apply the follwing oneliner to the server code:
-  ```diff
-  diff --git a/cli/wss-server.php b/cli/wss-server.php
-  index 984430ebb4db..83e6df0bdc2b 100644
-  --- a/cli/wss-server.php
-  +++ b/cli/wss-server.php
-  @@ -20,7 +20,7 @@ $server = new Server('0.0.0.0:8443', $loop);
-   $secureServer = new SecureServer($server, $loop, [
-       'local_cert'  => __DIR__  . '/../ssl/certificate.crt',
-       'local_pk' => __DIR__  . '/../ssl/private.key',
-  -    'verify_peer' => false,
-  +    'verify_peer' => true,
-   ]);
-
-   $limitingServer = new LimitingServer($secureServer, 50);
+- I've set up a test nginx server at `wss://yamane.dev:443`, which consists of:
+  - A deploy of [this PHP websocket demo project](https://github.com/chesslablab/chess-server);
+  - Behind an nginx proxy which adds a SSL layer, configured with a letsencrypt certificate and client auth enabled (using a self-signed client cert, as described [here](https://pavelevstigneev.medium.com/setting-nginx-with-letsencrypt-and-client-ssl-certificates-3ae608bb0e66))
+  - In order to check if your certificate/key pair properly authenticates against the above server, you can run, for example:
+  ```sh=bash
+  openssl s_client -connect yamane.dev:443 -cert path/to/client.crt -key path/to/client.key
   ```
 - Run patched chromium as follows, for example:
 ```sh=bash
@@ -161,25 +149,29 @@ out/linux/chrome \
   --enable-logging=stderr \
   --no-sandbox \
   --user-data-dir=/tmp/chr \
-  --vmodule='websocket*=1,wayland*=10' \
+  --vmodule='websocket*=1,*nss*=5,*ssl*=5,wayland*=5' \
   --auto-open-devtools-for-tabs
 ```
-- And run the following code in Chromium's developer console:
+- Assuming you have the client cert installed in the platform certificate store (NSS), run the following code in Chromium's developer console:
 ```js
-const ws = new WebSocket('ws://127.0.0.1:8080');
+# If no error shows up after running this, it means the client cert (auto)
+# selection + handshake/connection succeeded.
+const ws = new WebSocket('wss://yamane.dev:443');
+
+# So run this to ensure, we can talk to the wss server.
 ws.onmessage = (res) => { console.log(res.data) };
 ws.send('/start analysis');
 ```
-- Troubleshooting:
+
+#### WS sample server troubleshooting (FTR):
   - Had to create an empty `data/players.json` (eg: `echo '[]' > data/players.json`) file otherwise the server was failing to start with the following error:
 ```
 PHP Warning:  file_get_contents(src/../data/players.json): Failed to open stream: No such file or directory in vendor/chesslablab/php-chess/src/Grandmaster.php on line 13
 PHP Fatal error:  Uncaught TypeError: ArrayIterator::__construct(): Argument #1 ($array) must be of type array, null given in vendor/chesslablab/php-chess/src/Grandmaster.php:16
 ```
-  - Ensure Goma service isn't running, because some of its binaries listen to 8443 port
-
 
 ### Some links:
+
 - https://textslashplain.com/2020/05/04/client-certificate-authentication/
 - https://jpassing.com/2021/09/27/do-browsers-use-client-certificates-to-authenticate-the-user-the-device-or-both/
 - http://www.browserauth.net/tls-client-authentication
@@ -194,4 +186,9 @@ PHP Fatal error:  Uncaught TypeError: ArrayIterator::__construct(): Argument #1 
 - https://chromium.googlesource.com/chromium/src/+/refs/heads/master/net/docs/life-of-a-url-request.md
 - https://medium.com/geekculture/creating-a-local-websocket-server-with-tls-ssl-is-easy-as-pie-de1a2ef058e0
 - https://medium.com/geekculture/a-simple-example-of-ssl-tls-websocket-with-reactphp-and-ratchet-e03be973f521
+- https://help.zerossl.com/hc/en-us/articles/360058296034-Certificate-Format
+- https://www.electricmonk.nl/log/2018/06/02/ssl-tls-client-certificate-verification-with-python-v3-4-sslcontext/
+- https://www.nginx.com/blog/using-free-ssltls-certificates-from-lets-encrypt-with-nginx/
+- https://www.digitalocean.com/community/tutorials/how-to-set-up-let-s-encrypt-with-nginx-server-blocks-on-ubuntu-16-04
+- https://pavelevstigneev.medium.com/setting-nginx-with-letsencrypt-and-client-ssl-certificates-3ae608bb0e66
 
