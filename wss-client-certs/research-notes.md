@@ -1,19 +1,22 @@
 ### The problem:
 
-> Would it be possible to implement the same logic used for HTTPS when _AutoSelectCertificateForUrls_ policy is enabled? Which wouldn’t result in an UI pop-up.
-> Context: https://bugs.chromium.org/p/chromium/issues/detail?id=993907#c26
+> Would it be possible to implement (for WSS WebSockets) the same logic used for HTTPS when _AutoSelectCertificateForUrls_ policy is enabled? Which wouldn’t result in an UI pop-up.
+
+**Context:** [crbug.com/993907](https://bugs.chromium.org/p/chromium/issues/detail?id=993907#c26)
+
+### Analysis
 
 - Main classes involved:
-
 ![Class diagram with the main classes involved](https://github.com/nickdiego/chromium-docs/raw/main/wss-client-certs/chromium-wss-vs-https-client-cert-classes.png)
 
-- For regular http/https request, [network::URLLoader]() is used. Which encapsulates a bunch of things, including the IPC interaction with NetworkService (that tipically lives in a separate process), which ultimately uses a [net::URLRequest](https://source.chromium.org/chromium/chromium/src/+/main:net/url_request/url_request.h;l=85;drc=256182eb99a7e9de19375dc250df8b3d79e0bda8) to drive the connection, as well as SSL auth/certificate handling delegated to browser process (see [network::mojom::URLLoaderNetworkServiceObserver](https://source.chromium.org/chromium/chromium/src/+/main:services/network/public/mojom/url_loader_network_service_observer.mojom;l=83;drc=169c6cc102b39295a5bfe2f2a176b42b1c2fe2c4) in the class diagram) through mojo endpoints, etc. OTOH, [WebSocketStream]() holds a URLRequest instance itself instead, which implies in a significant divergence with the HTTP path.
+- For regular http/https request, [network::URLLoader](https://source.chromium.org/chromium/chromium/src/+/main:services/network/url_loader.h;l=95;drc=e175ac54eff056647c204feef699536863d04afc) is used. Which encapsulates a bunch of things, including the IPC interaction with NetworkService (that tipically lives in a separate process), which ultimately uses a [net::URLRequest](https://source.chromium.org/chromium/chromium/src/+/main:net/url_request/url_request.h;l=85;drc=256182eb99a7e9de19375dc250df8b3d79e0bda8) to drive the connection, as well as SSL auth/certificate handling delegated to browser process (see [network::mojom::URLLoaderNetworkServiceObserver](https://source.chromium.org/chromium/chromium/src/+/main:services/network/public/mojom/url_loader_network_service_observer.mojom;l=83;drc=169c6cc102b39295a5bfe2f2a176b42b1c2fe2c4) in the class diagram) through mojo endpoints, etc.
+- OTOH, for WebSockets, [network::WebSocket](https://source.chromium.org/chromium/chromium/src/+/main:services/network/websocket.h;l=54;drc=861e5739e4a59f36e209efef954193030ca234a9) is the "equivalent" to URLLoader, as it also encapsulates communication with NetworkService and browser process to deal with auth challenges, etc. It also indirectly owns an URLRequest (through WebSocketChannel => WebSocketStream => WebSocketStreamRequest. As can be seen in the class diagram above), though it currently does not handles client certificate requests coming through URLLoaderNetworkServiceObserver. That's that gap this proposal aims to address.
 
 ### Code diving
 
 - [x] Is [ClientCertStoreNSS](https://source.chromium.org/chromium/chromium/src/+/main:net/ssl/client_cert_store_nss.h;l=23;drc=70b0ee470bd53a63da6c4194579e8c2865db2b79) the [net::ClientCertStore](https://source.chromium.org/chromium/chromium/src/+/main:net/ssl/client_cert_store.h;l=21;drc=70b0ee470bd53a63da6c4194579e8c2865db2b79) used on Linux Desktop?
   - Answer: Yes. In Chrome, created at [ProfileNetworkContextService::CreateClientCertStore](https://source.chromium.org/chromium/chromium/src/+/main:chrome/browser/net/profile_network_context_service.cc;l=622-625;drc=169c6cc102b39295a5bfe2f2a176b42b1c2fe2c4) function.
-- [x] Which [network::mojom::URLLoaderNetworkServiceObserver]() impl is used for HTTPS?
+- [x] Which [network::mojom::URLLoaderNetworkServiceObserver](https://source.chromium.org/chromium/chromium/src/+/main:services/network/public/mojom/url_loader_network_service_observer.mojom;l=83;drc=169c6cc102b39295a5bfe2f2a176b42b1c2fe2c4) impl is used for HTTPS?
   - Answer: [content::StoragePartitionImpl](https://source.chromium.org/chromium/chromium/src/+/main:content/browser/storage_partition_impl.cc;l=1853;drc=70b0ee470bd53a63da6c4194579e8c2865db2b79).
   - Steps to hit the relevant code paths:
     1. Install `badssl.com-client.p12` cert from https://badssl.com/download:
@@ -72,7 +75,7 @@
   - An example of its usage is ...
 - [x] Which process/thread [WebSocketStream::Delegate::OnCertificateRequested()](https://source.chromium.org/chromium/chromium/src/+/main:net/websockets/websocket_stream.cc;l=426;drc=0e45c020c43b1a9f6d2870ff7f92b30a2f03a458) runs in?
   - Answer: It runs in NetworkService process, in the io thread.
-  - Here is a sample stack trace of [net::WebSocketStreamRequestImpl::PerformUpgrade()]():
+  - Here is a sample stack trace of [net::WebSocketStreamRequestImpl::PerformUpgrade()](https://source.chromium.org/chromium/chromium/src/+/main:net/websockets/websocket_stream.cc;l=173;drc=0e45c020c43b1a9f6d2870ff7f92b30a2f03a458):
       ```c++
       #2 0x7fe46e6b6194 net::(anonymous namespace)::WebSocketStreamRequestImpl::PerformUpgrade()
       #3 0x7fe46e6b5af7 net::(anonymous namespace)::Delegate::OnResponseStarted()
@@ -117,7 +120,7 @@
 
 ### Solution (WIP)
 
-[network::WebSocket](https://source.chromium.org/chromium/chromium/src/+/main:services/network/websocket.h;drc=da2ec58f64a4986e99d1799b711dade577a2a5f0) class already receives (and stores) a [URLLoaderNetworkServiceObserver](), though it is used only to forward [OnSSLCertificateError](https://source.chromium.org/chromium/chromium/src/+/main:services/network/websocket.cc;l=359-378;drc=da2ec58f64a4986e99d1799b711dade577a2a5f0) event as of now. So, the solution would consist of:
+[network::WebSocket](https://source.chromium.org/chromium/chromium/src/+/main:services/network/websocket.h;drc=da2ec58f64a4986e99d1799b711dade577a2a5f0) class already receives (and stores) a [URLLoaderNetworkServiceObserver](https://source.chromium.org/chromium/chromium/src/+/main:services/network/public/mojom/url_loader_network_service_observer.mojom;l=83;drc=169c6cc102b39295a5bfe2f2a176b42b1c2fe2c4), though it is used only to forward [OnSSLCertificateError](https://source.chromium.org/chromium/chromium/src/+/main:services/network/websocket.cc;l=359-378;drc=da2ec58f64a4986e99d1799b711dade577a2a5f0) event as of now. So, the solution would consist of:
 
 1. [x] Plumb WebSocketStream's [Delegate::OnCertificateRequest()](https://source.chromium.org/chromium/chromium/src/+/main:net/websockets/websocket_stream.cc;l=426;drc=da2ec58f64a4986e99d1799b711dade577a2a5f0) all the way up to [network::WebSocket](https://source.chromium.org/chromium/chromium/src/+/main:services/network/websocket.h;l=54;drc=da2ec58f64a4986e99d1799b711dade577a2a5f0) so that it can forward the request to the browser process, through its mojom::URLLoaderNetworkServiceObserver instance. Which requires to:
   - Add a new method to [net::WebSocketStream::ConnectDelegate](https://source.chromium.org/chromium/chromium/src/+/main:net/websockets/websocket_stream.h;l=91;drc=da2ec58f64a4986e99d1799b711dade577a2a5f0) interface and impl it in [net::WebSocketChannel](https://source.chromium.org/chromium/chromium/src/+/main:net/websockets/websocket_channel.h;l=51;drc=da2ec58f64a4986e99d1799b711dade577a2a5f0)
@@ -129,7 +132,7 @@
   - Use [URLLoader's impl](https://source.chromium.org/chromium/chromium/src/+/main:services/network/url_loader.cc;l=2036-2046;drc=da2ec58f64a4986e99d1799b711dade577a2a5f0) as reference.
 
 3. [ ] Modify (slightly?) Chrome's impl of [ChromeContentBrowserClient::SelectClientCertificate()](https://source.chromium.org/chromium/chromium/src/+/main:chrome/browser/chrome_content_browser_client.cc;l=3192;drc=da2ec58f64a4986e99d1799b711dade577a2a5f0) such that it avoids the Cert Selection UI popup, when it corresponds to a websocket request (how?). Likely optional for the initial short-term solution, though a hard-requirement for the final upstreamable solution.
-  - TODO: Investigate further.
+  - WIP: under investigation.
 
 **WIP Patch at:** https://chromium-review.googlesource.com/c/chromium/src/+/3733743
 
@@ -142,7 +145,7 @@
   ```sh=bash
   openssl s_client -connect yamane.dev:443 -cert path/to/client.crt -key path/to/client.key
   ```
-- Run patched chromium as follows, for example:
+- Run patched chromium as follows:
 ```sh=bash
 out/linux/chrome \
   --ozone-platform=wayland \
@@ -158,12 +161,13 @@ out/linux/chrome \
 # selection + handshake/connection succeeded.
 const ws = new WebSocket('wss://yamane.dev:443');
 
-# So run this to ensure, we can talk to the wss server.
+# So run this, for example, to ensure we can talk to the wss server.
 ws.onmessage = (res) => { console.log(res.data) };
 ws.send('/start analysis');
 ```
 
 #### WS sample server troubleshooting (FTR):
+
   - Had to create an empty `data/players.json` (eg: `echo '[]' > data/players.json`) file otherwise the server was failing to start with the following error:
 ```
 PHP Warning:  file_get_contents(src/../data/players.json): Failed to open stream: No such file or directory in vendor/chesslablab/php-chess/src/Grandmaster.php on line 13
@@ -191,4 +195,3 @@ PHP Fatal error:  Uncaught TypeError: ArrayIterator::__construct(): Argument #1 
 - https://www.nginx.com/blog/using-free-ssltls-certificates-from-lets-encrypt-with-nginx/
 - https://www.digitalocean.com/community/tutorials/how-to-set-up-let-s-encrypt-with-nginx-server-blocks-on-ubuntu-16-04
 - https://pavelevstigneev.medium.com/setting-nginx-with-letsencrypt-and-client-ssl-certificates-3ae608bb0e66
-
