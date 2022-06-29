@@ -145,6 +145,14 @@
   ```sh=bash
   openssl s_client -connect yamane.dev:443 -cert path/to/client.crt -key path/to/client.key
   ```
+- Ensure 'AutoSelectCertificateForUrls' policy is in place. By putting, for example, [auto-select-cert-policy.json](https://github.com/nickdiego/chromium-docs/blob/main/wss-client-certs/auto-select-cert-policy.json) file at `/etc/chromium/policies/managed` directory (note: it may vary depending on how chromium is installed on your distro/devel env). Its content:
+```json
+{
+  "AutoSelectCertificateForUrls": [
+    "{ \"pattern\": \"yamane.dev\", \"filter\": { \"ISSUER\": { \"CN\": \"Nick Yamane\" } } }"
+  ]
+}
+```
 - Run patched chromium as follows:
 ```sh=bash
 out/linux/chrome \
@@ -167,7 +175,6 @@ ws.send('/start analysis');
 ```
 
 #### WS sample server troubleshooting (FTR):
-
   - Had to create an empty `data/players.json` (eg: `echo '[]' > data/players.json`) file otherwise the server was failing to start with the following error:
 ```
 PHP Warning:  file_get_contents(src/../data/players.json): Failed to open stream: No such file or directory in vendor/chesslablab/php-chess/src/Grandmaster.php on line 13
@@ -175,7 +182,6 @@ PHP Fatal error:  Uncaught TypeError: ArrayIterator::__construct(): Argument #1 
 ```
 
 ### Some links:
-
 - https://textslashplain.com/2020/05/04/client-certificate-authentication/
 - https://jpassing.com/2021/09/27/do-browsers-use-client-certificates-to-authenticate-the-user-the-device-or-both/
 - http://www.browserauth.net/tls-client-authentication
@@ -183,6 +189,8 @@ PHP Fatal error:  Uncaught TypeError: ArrayIterator::__construct(): Argument #1 
   - https://groups.google.com/a/chromium.org/g/chromium-discuss/c/oBuvub4m_zs
   - https://chromeenterprise.google/policies/#AutoSelectCertificateForUrls
   - https://gist.github.com/IngussNeilands/3bbbb7d78954c85e2e988cf3bfec7caa
+  - https://chromium.googlesource.com/chromium/src/+/HEAD/docs/enterprise/policies.md
+  - https://www.chromium.org/administrators/linux-quick-start/
 - https://wiki.archlinux.org/title/Network_Security_Services
 - https://firefox-source-docs.mozilla.org/security/nss/legacy/tools/nss_tools_certutil/index.html#Using_the_Certificate_Database_Tool
 - https://firefox-source-docs.mozilla.org/security/nss/legacy/reference/nss_certificate_functions/index.html#cert_getdefaultcertdb
