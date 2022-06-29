@@ -1,0 +1,5 @@
+{
+  "AutoSelectCertificateForUrls": [
+    "{ \"pattern\": \"yamane.dev\", \"filter\": { \"ISSUER\": { \"CN\": \"Nick Yamane\" } } }"
+  ]
+}
