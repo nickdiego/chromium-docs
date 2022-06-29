@@ -145,7 +145,7 @@
   ```sh=bash
   openssl s_client -connect yamane.dev:443 -cert path/to/client.crt -key path/to/client.key
   ```
-- Ensure 'AutoSelectCertificateForUrls' policy is in place. By putting, for example, [auto-select-cert-policy.json](https://github.com/nickdiego/chromium-docs/blob/main/wss-client-certs/auto-select-cert-policy.json) file at `/etc/chromium/policies/managed` directory (note: it may vary depending on how chromium is installed on your distro/devel env). Its content:
+- Ensure 'AutoSelectCertificateForUrls' policy is in place. By putting, for example, [auto-select-cert-policy.json](https://github.com/nickdiego/chromium-docs/blob/main/wss-client-certs/auto-select-cert-policy.json) file into `/etc/chromium/policies/managed` directory (note: it may vary depending on how chromium is installed on your distro/devel env). Its content:
 ```json
 {
   "AutoSelectCertificateForUrls": [
@@ -165,11 +165,11 @@ out/linux/chrome \
 ```
 - Assuming you have the client cert installed in the platform certificate store (NSS), run the following code in Chromium's developer console:
 ```js
-# If no error shows up after running this, it means the client cert (auto)
-# selection + handshake/connection succeeded.
+// If no error shows up after running this, it means the client cert (auto)
+// selection + handshake/connection succeeded.
 const ws = new WebSocket('wss://yamane.dev:443');
 
-# So run this, for example, to ensure we can talk to the wss server.
+// So run this, for example, to ensure we can talk to the wss server.
 ws.onmessage = (res) => { console.log(res.data) };
 ws.send('/start analysis');
 ```
